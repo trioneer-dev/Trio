@@ -2,6 +2,7 @@ import CGMBLEKit
 import CGMBLEKitUI
 import Combine
 import CoreData
+import DexKit
 import Foundation
 import G7SensorKit
 import LibreLoop
@@ -852,13 +853,28 @@ extension Home {
             // (driven by lifecycle.percentComplete against `sensorEndsAt`) is
             // still mid-progress. Fall back to `sensorEndsAt` so bobble and
             // arc agree, and the user sees grace-period time remaining.
-            if let g7 = manager as? G7CGMManager {
+            if let g7 = manager as? G7SensorKit.G7CGMManager {
                 let now = Date()
                 if let exp = g7.sensorExpiresAt, exp > now { return exp }
                 return g7.sensorEndsAt ?? g7.sensorExpiresAt
             }
-            if let g6 = manager as? G6CGMManager, let exp = g6.latestReading?.sessionExpDate { return exp }
+            if let g6 = manager as? CGMBLEKit.G6CGMManager, let exp = g6.latestReading?.sessionExpDate { return exp }
             if let g5 = manager as? G5CGMManager, let exp = g5.latestReading?.sessionExpDate { return exp }
+
+            if let dexcom = manager as? DexcomCGMManager {
+                if let g7 = dexcom.g7 {
+                    // Same grace-period rule as G7SensorKit above: once
+                    // `sensorExpiresAt` is past, count down to `sensorEndsAt`
+                    // so bobble and arc agree.
+                    let now = Date()
+                    if let exp = g7.sensorExpiresAt, exp > now { return exp }
+                    return g7.sensorEndsAt ?? g7.sensorExpiresAt
+                }
+                if let g6 = dexcom.g6 {
+                    return g6.state.sensorExpirationDate
+                }
+                return nil
+            }
 
             if let libreLoop = manager as? LibreLoopCGMManager {
                 if case let .active(remaining, _) = libreLoop.sensorLifecycle, remaining > 0 {
@@ -869,7 +885,7 @@ extension Home {
             }
 
             let activatedAt: Date?
-            if let g7 = manager as? G7CGMManager {
+            if let g7 = manager as? G7SensorKit.G7CGMManager {
                 activatedAt = g7.sensorActivatedAt
             } else if let libre = manager as? LibreTransmitterManagerV3 {
                 activatedAt = libre.sensorInfoObservable.activatedAt
@@ -889,11 +905,21 @@ extension Home {
         /// Wall-clock end of the sensor's warmup window; `nil` when not warming up.
         private static func resolveWarmupEndsAt(manager: CGMManagerUI?) -> Date? {
             guard let manager else { return nil }
-            if let g7 = manager as? G7CGMManager {
+            if let g7 = manager as? G7SensorKit.G7CGMManager {
                 guard let ends = g7.sensorFinishesWarmupAt, ends > Date() else { return nil }
                 return ends
             }
-            if let g6 = manager as? G6CGMManager, let start = g6.latestReading?.sessionStartDate {
+            if let dexcom = manager as? DexcomCGMManager {
+                if let g7 = dexcom.g7 {
+                    guard let ends = g7.sensorFinishesWarmupAt, ends > Date() else { return nil }
+                    return ends
+                }
+                if let g6 = dexcom.g6, let ends = g6.state.warmupEndDate {
+                    return ends > Date() ? ends : nil
+                }
+                return nil
+            }
+            if let g6 = manager as? CGMBLEKit.G6CGMManager, let start = g6.latestReading?.sessionStartDate {
                 let window: TimeInterval = g6.isAnubis ? 50 * 60 : 2 * 60 * 60
                 let ends = start.addingTimeInterval(window)
                 return ends > Date() ? ends : nil
